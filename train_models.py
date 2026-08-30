@@ -1,14 +1,17 @@
 """
 Train the 4 models (Gradient Boosting, Random Forest, SVR, MLP), evaluate them
-on a common held-out test period, and save everything the Streamlit dashboard
-needs so app.py never has to retrain on page load:
+on a common held-out test period, run cross-validation, and save everything
+the Streamlit dashboard needs so app.py never has to retrain on page load:
 
-    models/<name>_model.pkl        -> fitted "Model A" (next-day PRICE) estimator
-    models/<name>_forecast_model.* -> fitted "Model B" (next-day RETURN) estimator
-    results/model_metrics.csv      -> RMSE / MAE / R2 per model (test set)
-    results/predictions_<name>.csv -> Date, Actual, Predicted (full history)
-    results/forecast_<name>.csv    -> Date, Median, Lower_5, Upper_95 (future)
+    models/<name>_price_model.pkl   -> fitted "Model A" (next-day PRICE) estimator
+    models/<name>_return_model.pkl  -> fitted "Model B" (next-day RETURN) estimator
+    results/model_metrics.csv       -> RMSE / MAE / R2 (train+test) per model, baseline flag, normalized %
+    results/cv_results.csv          -> per-fold TimeSeriesSplit CV scores per model
+    results/predictions_<name>.csv  -> Date, Actual, Predicted (full history)
+    results/forecast_<name>.csv     -> Date, Median, Lower_5, Upper_95 (future, anchored to last actual point)
     results/feature_importance_<name>.csv (tree models only)
+    results/eda_data.csv            -> cleaned raw-ish data + derived columns for the EDA page
+    results/meta.json               -> latest price/date, baseline model name, best model name
 
 Run this once (or whenever Gold Price.csv changes):
     python train_models.py
@@ -18,16 +21,14 @@ import json
 import joblib
 import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
 
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.neural_network import MLPRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
-from sklearn.pipeline import make_pipeline
-from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.model_selection import train_test_split, TimeSeriesSplit, cross_validate
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 from data_pipeline import build_features, FEATURE_COLS
@@ -42,6 +43,8 @@ N_SIMULATIONS = 150    # Monte Carlo paths for the recursive forecast
 DAMPEN_HALF_LIFE = 250
 MAXLAG = 10
 TEST_SIZE = 0.2
+CV_FOLDS = 5
+BASELINE_MODEL = "svr"  # per assignment requirement: one model must serve as the baseline
 
 np.random.seed(42)
 
@@ -55,7 +58,6 @@ def metrics(y_true, y_pred):
 
 
 def fit_log_trend(idx_train, idx_test, y_train):
-    """Same log-price trend fitting logic used in GBR/RFR/SVR notebooks."""
     log_price_train = np.log(y_train)
     t_train = idx_train.reshape(-1, 1)
     t_test = idx_test.reshape(-1, 1)
@@ -69,9 +71,12 @@ def fit_log_trend(idx_train, idx_test, y_train):
 def recursive_forecast(model, df_clean, predict_fn, horizon_days=HORIZON_DAYS,
                         n_sims=N_SIMULATIONS, residuals=None, hist_mean_return=0.0,
                         dampen_half_life=DAMPEN_HALF_LIFE, maxlag=MAXLAG, seed=7):
-    """Vectorised recursive multi-step Monte Carlo forecast on Target_Return,
-    identical in spirit to the GBR/RFR/SVR notebooks' Model B forecast engine."""
+    """Vectorised recursive multi-step Monte Carlo forecast on Target_Return.
+    The returned dataframe's FIRST row is anchored to the last actual price on
+    the last actual date, so a plotted 'Historical' line and this 'Forecast'
+    line share one point and connect with no visual gap."""
     last_actual_date = df_clean['Date'].max()
+    last_actual_price = float(df_clean['Price'].iloc[-1])
     future_dates = pd.bdate_range(start=last_actual_date + pd.Timedelta(days=1), periods=horizon_days)
 
     hist_len0 = maxlag + 10
@@ -128,7 +133,11 @@ def recursive_forecast(model, df_clean, predict_fn, horizon_days=HORIZON_DAYS,
     p05 = np.percentile(all_paths, 5, axis=0)
     p50 = np.percentile(all_paths, 50, axis=0)
     p95 = np.percentile(all_paths, 95, axis=0)
-    return pd.DataFrame({"Date": future_dates, "Median": p50, "Lower_5": p05, "Upper_95": p95})
+
+    forecast_df = pd.DataFrame({"Date": future_dates, "Median": p50, "Lower_5": p05, "Upper_95": p95})
+    anchor = pd.DataFrame({"Date": [last_actual_date], "Median": [last_actual_price],
+                           "Lower_5": [last_actual_price], "Upper_95": [last_actual_price]})
+    return pd.concat([anchor, forecast_df], ignore_index=True)
 
 
 def save_predictions(name, dates, actual, predicted):
@@ -137,9 +146,28 @@ def save_predictions(name, dates, actual, predicted):
     )
 
 
+def run_cv(estimator_factory, X_train, y_train_detrended, scale=False, n_splits=CV_FOLDS):
+    """TimeSeriesSplit cross-validation on the (already detrended) training
+    portion only -- mirrors what GBR.ipynb already did, extended to all models
+    so overfitting / stability can be compared fairly across models."""
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    if scale:
+        estimator = Pipeline([("scaler", StandardScaler()), ("model", estimator_factory())])
+    else:
+        estimator = estimator_factory()
+    cv_results = cross_validate(
+        estimator, X_train, y_train_detrended, cv=tscv,
+        scoring={"r2": "r2", "rmse": "neg_root_mean_squared_error"},
+        return_train_score=False,
+    )
+    return pd.DataFrame({
+        "Fold": range(1, n_splits + 1),
+        "R2": cv_results["test_r2"],
+        "RMSE_detrended": -cv_results["test_rmse"],
+    })
+
+
 def train_tree_or_kernel_model(name, estimator_factory, df_clean, scale_svr=False):
-    """Shared Model-A / Model-B training for GBR, RFR, SVR (identical structure
-    across the three notebooks, only the estimator class differs)."""
     df_A = df_clean.dropna(subset=FEATURE_COLS + ['Target']).reset_index(drop=True)
     df_A['TimeIndex'] = np.arange(len(df_A))
     X = df_A[FEATURE_COLS]
@@ -150,6 +178,11 @@ def train_tree_or_kernel_model(name, estimator_factory, df_clean, scale_svr=Fals
 
     trend_model, log_trend_train, log_trend_test = fit_log_trend(idx_train.values, idx_test.values, y_train.values)
     target_detrended_train = np.log(y_train.values) - log_trend_train
+
+    # ---- 5-fold TimeSeriesSplit CV on the training portion (stability / overfitting check) ----
+    cv_df = run_cv(estimator_factory, X_train, target_detrended_train, scale=scale_svr)
+    cv_df.insert(0, "Model", name)
+    cv_df.to_csv(f"{RESULTS_DIR}/cv_{name}.csv", index=False)
 
     model = estimator_factory()
     if scale_svr:
@@ -222,7 +255,6 @@ def train_tree_or_kernel_model(name, estimator_factory, df_clean, scale_svr=Fals
 
 
 def train_mlp(df_raw_path="Gold Price.csv"):
-    """Reproduces MLP.ipynb's own (different) feature engineering + forecast."""
     df = pd.read_csv(df_raw_path)
     df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date').reset_index(drop=True)
@@ -278,6 +310,14 @@ def train_mlp(df_raw_path="Gold Price.csv"):
         df_clean['Date'][1:], YT, test_size=0.2, random_state=42, shuffle=False
     )
 
+    # ---- 5-fold TimeSeriesSplit CV (MLP is scale-sensitive -> Pipeline with StandardScaler) ----
+    cv_df = run_cv(
+        lambda: MLPRegressor(hidden_layer_sizes=(11,), max_iter=500, early_stopping=True, random_state=42),
+        X_train, y_train.values, scale=True,
+    )
+    cv_df.insert(0, "Model", "mlp")
+    cv_df.to_csv(f"{RESULTS_DIR}/cv_mlp.csv", index=False)
+
     model = MLPRegressor(hidden_layer_sizes=(11,), max_iter=500, early_stopping=True, random_state=42)
     model.fit(X_train, y_train)
 
@@ -292,12 +332,12 @@ def train_mlp(df_raw_path="Gold Price.csv"):
 
     residuals = (test_actual - test_pred.values)
 
-    # Recursive forecast (same approach as MLP.ipynb, trimmed to HORIZON_DAYS)
     rng = np.random.default_rng(42)
     price = list(df_clean['Price'])
     dprice = list(df_clean['DPrice'])
     retrn = list(df_clean['Return'])
     last_date = df_clean['Date'].max()
+    last_price = float(price[-1])
     future_dates = pd.bdate_range(start=last_date + pd.Timedelta(days=1), periods=HORIZON_DAYS)
 
     future_x = np.arange(len(df_clean) + HORIZON_DAYS).reshape(-1, 1)
@@ -324,6 +364,9 @@ def train_mlp(df_raw_path="Gold Price.csv"):
     p50 = np.percentile(sims, 50, axis=0)
     p95 = np.percentile(sims, 95, axis=0)
     forecast_df = pd.DataFrame({"Date": future_dates, "Median": p50, "Lower_5": p05, "Upper_95": p95})
+    anchor = pd.DataFrame({"Date": [last_date], "Median": [last_price],
+                           "Lower_5": [last_price], "Upper_95": [last_price]})
+    forecast_df = pd.concat([anchor, forecast_df], ignore_index=True)
     forecast_df.to_csv(f"{RESULTS_DIR}/forecast_mlp.csv", index=False)
 
     joblib.dump(model, f"{MODELS_DIR}/mlp_price_model.pkl")
@@ -333,7 +376,31 @@ def train_mlp(df_raw_path="Gold Price.csv"):
             "Test_MAE": test_metrics["MAE"], "Test_R2": test_metrics["R2"]}
 
 
+def build_eda_data(raw_csv_path="Gold Price.csv"):
+    """Everything the EDA page needs, precomputed once so app.py never has to
+    ship the raw CSV or recompute this on every reload."""
+    df = pd.read_csv(raw_csv_path)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.sort_values('Date').reset_index(drop=True)
+
+    df['Year'] = df['Date'].dt.year
+    df['Month'] = df['Date'].dt.month
+    df['MonthName'] = df['Date'].dt.month_name()
+    df['dif'] = df['High'] - df['Low']
+    df['Daily_Range_Pct'] = (df['High'] - df['Low']) / df['Low'] * 100
+    df['RunningMax'] = df['Price'].cummax()
+    df['Drawdown_pct'] = (df['Price'] - df['RunningMax']) / df['RunningMax'] * 100
+    df['Indexed_Price'] = df['Price'] / df['Price'].iloc[0] * 100
+
+    keep_cols = ['Date', 'Year', 'Month', 'MonthName', 'Price', 'Open', 'High', 'Low',
+                 'Volume', 'Chg%', 'dif', 'Daily_Range_Pct', 'Drawdown_pct', 'Indexed_Price']
+    df[keep_cols].to_csv(f"{RESULTS_DIR}/eda_data.csv", index=False)
+
+
 def main():
+    print("Building EDA dataset ...")
+    build_eda_data()
+
     print("Building shared features for GBR / RFR / SVR ...")
     df_clean = build_features()
     df_clean.to_csv("Gold_Price_Cleaned.csv", index=False)
@@ -353,7 +420,7 @@ def main():
                                        min_samples_leaf=5, random_state=42, n_jobs=-1),
         df_clean,
     ))
-    print("Training Support Vector Regressor ...")
+    print("Training Support Vector Regressor (baseline model) ...")
     rows.append(train_tree_or_kernel_model(
         "svr",
         lambda: SVR(kernel='rbf', C=10, epsilon=0.1, gamma='scale'),
@@ -364,16 +431,41 @@ def main():
     rows.append(train_mlp())
 
     metrics_df = pd.DataFrame(rows)
+    metrics_df["Baseline"] = metrics_df["Model"] == BASELINE_MODEL
+
+    mean_price = float(df_clean['Price'].mean())
+    metrics_df["Test_RMSE_pct"] = metrics_df["Test_RMSE"] / mean_price * 100
+    metrics_df["Test_MAE_pct"] = metrics_df["Test_MAE"] / mean_price * 100
+    metrics_df["Test_R2_pct"] = metrics_df["Test_R2"] * 100
+    metrics_df["Train_RMSE_pct"] = metrics_df["Train_RMSE"] / mean_price * 100
+    metrics_df["Train_MAE_pct"] = metrics_df["Train_MAE"] / mean_price * 100
+    metrics_df["Train_R2_pct"] = metrics_df["Train_R2"] * 100
     metrics_df.to_csv(f"{RESULTS_DIR}/model_metrics.csv", index=False)
+
+    # combine per-model CV files into one table for the app
+    cv_all = pd.concat([
+        pd.read_csv(f"{RESULTS_DIR}/cv_{m}.csv") for m in ["gbr", "rfr", "svr", "mlp"]
+    ], ignore_index=True)
+    cv_all.to_csv(f"{RESULTS_DIR}/cv_results.csv", index=False)
+    for m in ["gbr", "rfr", "svr", "mlp"]:
+        os.remove(f"{RESULTS_DIR}/cv_{m}.csv")
+
+    best = metrics_df.loc[metrics_df["Test_R2"].idxmax(), "Model"]
 
     latest_price = float(df_clean['Price'].iloc[-1])
     latest_date = str(df_clean['Date'].iloc[-1].date())
     with open(f"{RESULTS_DIR}/meta.json", "w") as f:
-        json.dump({"latest_price": latest_price, "latest_date": latest_date,
-                   "n_rows": int(len(df_clean)), "horizon_days": HORIZON_DAYS}, f)
+        json.dump({
+            "latest_price": latest_price, "latest_date": latest_date,
+            "n_rows": int(len(df_clean)), "horizon_days": HORIZON_DAYS,
+            "baseline_model": BASELINE_MODEL, "best_model": best,
+        }, f)
 
     print("\n=== Model comparison (test set) ===")
-    print(metrics_df.to_string(index=False))
+    print(metrics_df[["Model", "Baseline", "Test_RMSE", "Test_MAE", "Test_R2"]].to_string(index=False))
+    print(f"\nBaseline model: {BASELINE_MODEL} | Best model: {best}")
+    print("\n=== Cross-validation (5-fold TimeSeriesSplit, mean R2 per model) ===")
+    print(cv_all.groupby("Model")["R2"].mean().to_string())
     print("\nAll artifacts saved under results/ and models/.")
 
 
