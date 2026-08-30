@@ -1,7 +1,6 @@
 streamlit
-papermill
-nbformat
 pandas
 numpy
-matplotlib
 scikit-learn
+joblib
+matplotlib
