@@ -1,1 +1,1 @@
-{"latest_price": 135793.0, "latest_date": "2026-01-02", "n_rows": 3084, "horizon_days": 60, "baseline_model": "svr", "best_model": "mlp", "monte_carlo_models": ["gbr", "rfr", "svr"]}
+{"latest_price": 135793.0, "latest_date": "2026-01-02", "n_rows": 3084, "horizon_days": 126, "baseline_model": "svr", "best_model": "mlp", "monte_carlo_models": ["gbr", "rfr", "svr"]}

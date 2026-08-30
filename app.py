@@ -7,7 +7,12 @@ import plotly.express as px
 
 st.set_page_config(page_title="Gold Price Forecasting Dashboard", page_icon=None, layout="wide")
 
-MODEL_LABELS = {"gbr": "Gradient Boosting", "rfr": "Random Forest", "svr": "SVR", "mlp": "MLP"}
+MODEL_LABELS = {
+    "gbr": "Gradient Boosting Regressor (GBR)",
+    "rfr": "Random Forest Regressor (RFR)",
+    "svr": "Support Vector Regression (SVR)",
+    "mlp": "Multi-Layer Perceptron Regressor (MLP)",
+}
 COLORS = {"gbr": "#1f77b4", "rfr": "#2ca02c", "svr": "#ff7f0e", "mlp": "#9467bd"}
 PAGES = ["Overview", "Forecast", "Model Comparison", "Model Analysis", "EDA"]
 TEMPLATE = "plotly_white"
@@ -76,7 +81,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.sidebar.title("Gold Price Forecasting")
+st.sidebar.title("\U0001FA99 Gold Price Forecasting")
 st.sidebar.caption("Machine Learning Dashboard")
 for p in PAGES:
     is_active = st.session_state.page == p
@@ -312,185 +317,215 @@ elif page == "Model Analysis":
 elif page == "EDA":
     st.title("Exploratory Data Analysis")
     eda = load_eda().sort_values("Date").reset_index(drop=True)
-
-    # --- Candlestick, last 60 trading days --------------------------------
-    st.subheader("Candlestick: Last 60 Trading Days")
-    recent = eda.tail(60)
-    fig = go.Figure(go.Candlestick(
-        x=recent["Date"], open=recent["Open"], high=recent["High"],
-        low=recent["Low"], close=recent["Price"],
-        increasing_line_color="seagreen", decreasing_line_color="firebrick",
-    ))
-    base_layout(fig, "OHLC Candlestick \u2014 Last 60 Trading Days", "Date", "Price", height=480)
-    fig.update_layout(xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, width="stretch")
-
-    # --- Price distribution -------------------------------------------
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Price Distribution")
-        fig = go.Figure(go.Histogram(x=eda["Price"], nbinsx=50, marker_color="#B8860B"))
-        base_layout(fig, "Gold Price Distribution", "Price", "Frequency", height=380)
-        st.plotly_chart(fig, width="stretch")
-        st.caption(
-            f"Mean: {eda['Price'].mean():,.0f} | Median: {eda['Price'].median():,.0f} | "
-            f"Std Dev: {eda['Price'].std():,.0f} | Skewness: {eda['Price'].skew():.2f}"
-        )
-    with c2:
-        st.subheader("Volume Distribution")
-        fig = go.Figure(go.Histogram(x=eda["Volume"], nbinsx=50, marker_color="orange"))
-        base_layout(fig, "Trading Volume Distribution", "Volume", "Frequency", height=380)
-        st.plotly_chart(fig, width="stretch")
-
-    # --- Price distribution by year (box) -------------------------------
-    st.subheader("Price Distribution by Year")
-    fig = px.box(eda, x="Year", y="Price", template=TEMPLATE)
-    base_layout(fig, "Gold Price Distribution by Year", "Year", "Price", height=440)
-    fig.update_xaxes(type="category")
-    st.plotly_chart(fig, width="stretch")
-
-    # --- Boxplot of all numeric features ---------------------------------
-    st.subheader("Boxplot of All Numerical Features")
-    numeric_cols = ["Price", "Open", "High", "Low", "Volume"]
-    fig = go.Figure()
-    for col in numeric_cols:
-        fig.add_trace(go.Box(y=eda[col], name=col))
-    base_layout(fig, "Boxplot Analysis of All Numerical Features", "Feature", "Value", height=440)
-    fig.update_layout(showlegend=False)
-    st.plotly_chart(fig, width="stretch")
-
-    # --- Correlation heatmap ----------------------------------------------
-    st.subheader("Correlation Heatmap")
-    numeric_cols2 = ["Price", "Open", "High", "Low", "Volume", "Chg%"]
-    corr = eda[numeric_cols2].corr()
-    fig = go.Figure(go.Heatmap(z=corr.values, x=corr.columns, y=corr.columns,
-                                colorscale="RdBu_r", zmid=0, zmin=-1, zmax=1,
-                                text=corr.round(2).values, texttemplate="%{text}"))
-    base_layout(fig, "Correlation Between Price Features", "", "", height=460)
-    st.plotly_chart(fig, width="stretch")
-
-    # --- Monthly average % change heatmap ---------------------------------
-    st.subheader("Monthly Average % Change Heatmap")
-    monthly = eda.groupby(["Year", "Month"])["Chg%"].mean().reset_index()
-    pivot = monthly.pivot(index="Year", columns="Month", values="Chg%")
     month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    fig = go.Figure(go.Heatmap(z=pivot.values, x=[month_names[m - 1] for m in pivot.columns],
-                                y=pivot.index, colorscale="RdYlGn", zmid=0,
-                                text=np.round(pivot.values, 2), texttemplate="%{text}"))
-    base_layout(fig, "Average Monthly Gold Price Change (%)", "Month", "Year", height=460)
-    st.plotly_chart(fig, width="stretch")
+    month_names_full = ["January", "February", "March", "April", "May", "June",
+                         "July", "August", "September", "October", "November", "December"]
 
-    # --- Average change by month / year -----------------------------------
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Average Change (%) by Month")
-        m_avg = eda.groupby("Month")["Chg%"].mean().reindex(range(1, 13))
-        fig = go.Figure(go.Scatter(x=[month_names[m - 1] for m in m_avg.index], y=m_avg.values,
-                                    mode="lines+markers", line=dict(color="#1f4e8c")))
-        base_layout(fig, "Average Change (%) by Month", "Month", "Average Chg%", height=380)
-        st.plotly_chart(fig, width="stretch")
-    with c2:
-        st.subheader("Average Change (%) by Year")
-        y_avg = eda.groupby("Year")["Chg%"].mean()
-        fig = go.Figure(go.Scatter(x=y_avg.index, y=y_avg.values, mode="lines+markers",
-                                    line=dict(color="#8c1f4e")))
-        base_layout(fig, "Average Change (%) by Year", "Year", "Average Chg%", height=380)
+    tab_trend, tab_dist, tab_vol, tab_season, tab_corr = st.tabs(
+        ["Price Trend", "Distribution & Dispersion", "Volatility & Risk",
+         "Seasonality", "Correlation Analysis"]
+    )
+
+    # ===================================================== PRICE TREND ====
+    with tab_trend:
+        st.subheader("Candlestick: Last 60 Trading Days")
+        recent = eda.tail(60)
+        fig = go.Figure(go.Candlestick(
+            x=recent["Date"], open=recent["Open"], high=recent["High"],
+            low=recent["Low"], close=recent["Price"],
+            increasing_line_color="seagreen", decreasing_line_color="firebrick",
+        ))
+        base_layout(fig, "OHLC Candlestick \u2014 Last 60 Trading Days", "Date", "Price", height=480)
+        fig.update_layout(xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, width="stretch")
 
-    # --- Average High-Low difference by month ------------------------------
-    st.subheader("Average High-Low Difference by Month")
-    diff_avg = eda.groupby("Month")["dif"].mean().reindex(range(1, 13))
-    fig = go.Figure(go.Scatter(x=[month_names[m - 1] for m in diff_avg.index], y=diff_avg.values,
-                                mode="lines+markers", line=dict(color="#2fb3c9")))
-    base_layout(fig, "Average High-Low Difference by Month", "Month", "Average High-Low Difference", height=380)
-    st.plotly_chart(fig, width="stretch")
-
-    # --- Scatter: Price vs Chg% ---------------------------------------------
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Price vs Daily % Change")
-        fig = go.Figure(go.Scattergl(x=eda["Price"], y=eda["Chg%"], mode="markers",
-                                      marker=dict(color="#1f77b4", size=4, opacity=0.5)))
-        base_layout(fig, "Gold Price vs Daily Percentage Change", "Price", "Daily Change (%)", height=420)
+        st.subheader("Indexed Price Growth")
+        fig = go.Figure(go.Scatter(x=eda["Date"], y=eda["Indexed_Price"], mode="lines",
+                                    line=dict(color="#1f4e8c", width=1.1)))
+        fig.add_hline(y=100, line_dash="dash", line_color="gray")
+        base_layout(fig, "Gold Price Growth Indexed to 100", "Date", "Indexed Price (Start = 100)", height=420)
         st.plotly_chart(fig, width="stretch")
-    with c2:
+
+        st.subheader("Price Distribution by Year")
+        fig = px.box(eda, x="Year", y="Price", template=TEMPLATE)
+        base_layout(fig, "Gold Price Distribution by Year", "Year", "Price", height=440)
+        fig.update_xaxes(type="category")
+        st.plotly_chart(fig, width="stretch")
+
+    # ============================================ DISTRIBUTION & DISPERSION
+    with tab_dist:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Price Distribution")
+            fig = go.Figure(go.Histogram(x=eda["Price"], nbinsx=50, marker_color="#B8860B"))
+            base_layout(fig, "Gold Price Distribution", "Price", "Frequency", height=380)
+            st.plotly_chart(fig, width="stretch")
+            st.caption(
+                f"Mean: {eda['Price'].mean():,.0f} | Median: {eda['Price'].median():,.0f} | "
+                f"Std Dev: {eda['Price'].std():,.0f} | Skewness: {eda['Price'].skew():.2f}"
+            )
+        with c2:
+            st.subheader("Volume Distribution")
+            fig = go.Figure(go.Histogram(x=eda["Volume"], nbinsx=50, marker_color="orange"))
+            base_layout(fig, "Trading Volume Distribution", "Volume", "Frequency", height=380)
+            st.plotly_chart(fig, width="stretch")
+
+        st.subheader("Boxplot of All Numerical Features")
+        numeric_cols = ["Price", "Open", "High", "Low", "Volume"]
+        fig = go.Figure()
+        for col in numeric_cols:
+            fig.add_trace(go.Box(y=eda[col], name=col))
+        base_layout(fig, "Boxplot Analysis of All Numerical Features", "Feature", "Value", height=440)
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, width="stretch")
+
+    # =================================================== VOLATILITY & RISK
+    with tab_vol:
         st.subheader("Distribution of Daily Changes")
         fig = go.Figure(go.Histogram(x=eda["Chg%"], nbinsx=40, marker_color="#4c72b0"))
-        base_layout(fig, "Distribution of Daily Gold Price Changes", "Daily Change (%)", "Frequency", height=420)
+        base_layout(fig, "Distribution of Daily Gold Price Changes", "Daily Change (%)", "Frequency", height=400)
         st.plotly_chart(fig, width="stretch")
 
-    # --- Correlation: Chg% vs High-Low diff, with regression -----------------
-    st.subheader("Correlation: |Change %| vs High-Low Difference")
-    abs_chg = eda["Chg%"].abs()
-    valid = eda["dif"].notna() & abs_chg.notna()
-    corr_dif = np.corrcoef(eda.loc[valid, "dif"], abs_chg[valid])[0, 1]
-    m, b = np.polyfit(eda.loc[valid, "dif"], abs_chg[valid], 1)
-    x_line = np.linspace(eda["dif"].min(), eda["dif"].max(), 100)
-    fig = go.Figure()
-    fig.add_trace(go.Scattergl(x=eda["dif"], y=abs_chg, mode="markers",
-                                marker=dict(color="#2ca02c", size=4, opacity=0.5), name="Days"))
-    fig.add_trace(go.Scatter(x=x_line, y=m * x_line + b, mode="lines",
-                              line=dict(color="black", width=2), name="Regression line"))
-    base_layout(fig, f"Correlation Between |Chg%| and High-Low Difference (r = {corr_dif:.3f})",
-                "High-Low Difference", "Absolute Change (%)", height=440)
-    st.plotly_chart(fig, width="stretch")
-
-    # --- Correlation: Chg% vs Volume, with regression -------------------------
-    st.subheader("Correlation: |Change %| vs Trading Volume")
-    corr_vol = np.corrcoef(eda["Volume"], abs_chg)[0, 1]
-    m2, b2 = np.polyfit(eda["Volume"], abs_chg, 1)
-    x_line2 = np.linspace(eda["Volume"].min(), eda["Volume"].max(), 100)
-    fig = go.Figure()
-    fig.add_trace(go.Scattergl(x=eda["Volume"], y=abs_chg, mode="markers",
-                                marker=dict(color="#ff7f0e", size=4, opacity=0.5), name="Days"))
-    fig.add_trace(go.Scatter(x=x_line2, y=m2 * x_line2 + b2, mode="lines",
-                              line=dict(color="black", width=2), name="Regression line"))
-    base_layout(fig, f"Correlation Between |Chg%| and Trade Volume (r = {corr_vol:.3f})",
-                "Trade Volume", "Absolute Change (%)", height=440)
-    st.plotly_chart(fig, width="stretch")
-
-    # --- Overnight vs intraday variance share (rolling 60-day) ---------------
-    st.subheader("Overnight vs Intraday Price Movement")
-    roll = 60
-    ov_v = eda["Overnight_Pct"].rolling(roll).var()
-    id_v = eda["Intraday_Pct"].rolling(roll).var()
-    share = ov_v / (ov_v + id_v) * 100
-    fig = go.Figure(go.Scatter(x=eda["Date"], y=share, mode="lines", line=dict(color="#1f4e8c", width=1.3)))
-    fig.add_hline(y=50, line_dash="dash", line_color="orange",
-                  annotation_text="50% line: overnight = intraday", annotation_position="top left")
-    base_layout(fig, "Share of 60-Day Variance From Overnight Gap", "Date",
-                "Share of Variance From Overnight (%)", height=440)
-    st.plotly_chart(fig, width="stretch")
-
-    # --- Drawdown / Indexed growth -----------------------------------------
-    c1, c2 = st.columns(2)
-    with c1:
         st.subheader("Drawdown from Running Peak")
         fig = go.Figure(go.Scatter(x=eda["Date"], y=eda["Drawdown_pct"], mode="lines",
                                     line=dict(color="firebrick", width=0.9),
                                     fill="tozeroy", fillcolor="rgba(178,34,34,0.3)"))
         base_layout(fig, "Drawdown From Running Peak Price", "Date", "Drawdown (%)", height=400)
         st.plotly_chart(fig, width="stretch")
-    with c2:
-        st.subheader("Indexed Price Growth")
-        fig = go.Figure(go.Scatter(x=eda["Date"], y=eda["Indexed_Price"], mode="lines",
-                                    line=dict(color="#1f4e8c", width=1.1)))
-        fig.add_hline(y=100, line_dash="dash", line_color="gray")
-        base_layout(fig, "Gold Price Growth Indexed to 100", "Date", "Indexed Price (Start = 100)", height=400)
+
+        st.subheader("Overnight vs Intraday Price Movement")
+        roll = 60
+        ov_v = eda["Overnight_Pct"].rolling(roll).var()
+        id_v = eda["Intraday_Pct"].rolling(roll).var()
+        share = ov_v / (ov_v + id_v) * 100
+        fig = go.Figure(go.Scatter(x=eda["Date"], y=share, mode="lines", line=dict(color="#1f4e8c", width=1.3)))
+        fig.add_hline(y=50, line_dash="dash", line_color="orange",
+                      annotation_text="50% line: overnight = intraday", annotation_position="top left")
+        base_layout(fig, "Share of 60-Day Variance From Overnight Gap", "Date",
+                    "Share of Variance From Overnight (%)", height=440)
         st.plotly_chart(fig, width="stretch")
 
-    # --- Annual best vs worst daily return (dumbbell) -------------------------
-    st.subheader("Annual Best vs Worst Daily Change")
-    annual = eda.dropna(subset=["Chg%"]).groupby("Year")["Chg%"].agg(Best="max", Worst="min").reset_index()
-    fig = go.Figure()
-    for _, r in annual.iterrows():
-        fig.add_trace(go.Scatter(x=[r["Worst"], r["Best"]], y=[r["Year"], r["Year"]],
-                                  mode="lines", line=dict(color="#A2AABB", width=2), showlegend=False))
-    fig.add_trace(go.Scatter(x=annual["Worst"], y=annual["Year"], mode="markers",
-                              marker=dict(color="#C0392B", size=9), name="Worst day"))
-    fig.add_trace(go.Scatter(x=annual["Best"], y=annual["Year"], mode="markers",
-                              marker=dict(color="#1A6B5C", size=9), name="Best day"))
-    fig.add_vline(x=0, line_color="#D0D5D8")
-    base_layout(fig, "Annual Best vs Worst Daily % Change", "Daily Change (%)", "Year", height=520)
-    fig.update_yaxes(type="category")
-    st.plotly_chart(fig, width="stretch")
+        st.subheader("Annual Best vs Worst Daily Change")
+        annual = eda.dropna(subset=["Chg%"]).groupby("Year")["Chg%"].agg(Best="max", Worst="min").reset_index()
+        fig = go.Figure()
+        for _, r in annual.iterrows():
+            fig.add_trace(go.Scatter(x=[r["Worst"], r["Best"]], y=[r["Year"], r["Year"]],
+                                      mode="lines", line=dict(color="#A2AABB", width=2), showlegend=False))
+        fig.add_trace(go.Scatter(x=annual["Worst"], y=annual["Year"], mode="markers",
+                                  marker=dict(color="#C0392B", size=9), name="Worst day"))
+        fig.add_trace(go.Scatter(x=annual["Best"], y=annual["Year"], mode="markers",
+                                  marker=dict(color="#1A6B5C", size=9), name="Best day"))
+        fig.add_vline(x=0, line_color="#D0D5D8")
+        base_layout(fig, "Annual Best vs Worst Daily % Change", "Daily Change (%)", "Year", height=520)
+        fig.update_yaxes(type="category")
+        st.plotly_chart(fig, width="stretch")
+
+    # ========================================================= SEASONALITY
+    with tab_season:
+        st.subheader("Monthly Average % Change Heatmap")
+        monthly = eda.groupby(["Year", "Month"])["Chg%"].mean().reset_index()
+        pivot = monthly.pivot(index="Year", columns="Month", values="Chg%")
+        fig = go.Figure(go.Heatmap(z=pivot.values, x=[month_names[m - 1] for m in pivot.columns],
+                                    y=pivot.index, colorscale="RdYlGn", zmid=0,
+                                    text=np.round(pivot.values, 2), texttemplate="%{text}"))
+        base_layout(fig, "Average Monthly Gold Price Change (%)", "Month", "Year", height=460)
+        st.plotly_chart(fig, width="stretch")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Average Change (%) by Month")
+            m_avg = eda.groupby("Month")["Chg%"].mean().reindex(range(1, 13))
+            fig = go.Figure(go.Scatter(x=[month_names[m - 1] for m in m_avg.index], y=m_avg.values,
+                                        mode="lines+markers", line=dict(color="#1f4e8c")))
+            base_layout(fig, "Average Change (%) by Month", "Month", "Average Chg%", height=380)
+            st.plotly_chart(fig, width="stretch")
+        with c2:
+            st.subheader("Average Change (%) by Year")
+            y_avg = eda.groupby("Year")["Chg%"].mean()
+            fig = go.Figure(go.Scatter(x=y_avg.index, y=y_avg.values, mode="lines+markers",
+                                        line=dict(color="#8c1f4e")))
+            base_layout(fig, "Average Change (%) by Year", "Year", "Average Chg%", height=380)
+            st.plotly_chart(fig, width="stretch")
+
+        st.subheader("Average High-Low Difference by Month")
+        diff_avg = eda.groupby("Month")["dif"].mean().reindex(range(1, 13))
+        fig = go.Figure(go.Scatter(x=[month_names[m - 1] for m in diff_avg.index], y=diff_avg.values,
+                                    mode="lines+markers", line=dict(color="#2fb3c9")))
+        base_layout(fig, "Average High-Low Difference by Month", "Month", "Average High-Low Difference", height=380)
+        st.plotly_chart(fig, width="stretch")
+
+        st.subheader("Monthly Distribution of Gold Opening Price")
+        eda_month = eda.copy()
+        eda_month["MonthName"] = pd.Categorical(
+            eda_month["Month"].apply(lambda m: month_names_full[m - 1]),
+            categories=month_names_full, ordered=True,
+        )
+        fig = go.Figure()
+        for mn in month_names_full:
+            fig.add_trace(go.Violin(y=eda_month.loc[eda_month["MonthName"] == mn, "Open"],
+                                     name=mn[:3], box_visible=True, meanline_visible=True,
+                                     line_color="navy", fillcolor="skyblue", opacity=0.8))
+        base_layout(fig, "Monthly Distribution of Gold Opening Price", "Month", "Opening Price", height=460)
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, width="stretch")
+
+        st.subheader("Average Gold Trading Volume by Month")
+        vol_avg = eda.groupby("Month")["Volume"].mean().reindex(range(1, 13))
+        fig = go.Figure(go.Scatter(x=[month_names[m - 1] for m in vol_avg.index], y=vol_avg.values,
+                                    mode="lines+markers", line=dict(color="#d4a017")))
+        base_layout(fig, "Average Gold Trading Volume by Month", "Month", "Average Trading Volume", height=380)
+        st.plotly_chart(fig, width="stretch")
+
+    # ================================================ CORRELATION ANALYSIS
+    with tab_corr:
+        st.subheader("Correlation Heatmap")
+        numeric_cols2 = ["Price", "Open", "High", "Low", "Volume", "Chg%"]
+        corr = eda[numeric_cols2].corr()
+        fig = go.Figure(go.Heatmap(z=corr.values, x=corr.columns, y=corr.columns,
+                                    colorscale="RdBu_r", zmid=0, zmin=-1, zmax=1,
+                                    text=corr.round(2).values, texttemplate="%{text}"))
+        base_layout(fig, "Correlation Between Price Features", "", "", height=460)
+        st.plotly_chart(fig, width="stretch")
+
+        st.subheader("Price vs |Daily % Change|")
+        abs_chg_pv = eda["Chg%"].abs()
+        corr_pv = np.corrcoef(eda["Price"], abs_chg_pv)[0, 1]
+        fig = go.Figure(go.Scattergl(x=eda["Price"], y=abs_chg_pv, mode="markers",
+                                      marker=dict(color="#1f77b4", size=4, opacity=0.5)))
+        base_layout(fig, f"Gold Price vs |Daily % Change| (r = {corr_pv:.3f})",
+                    "Price", "|Daily Change| (%)", height=420)
+        st.plotly_chart(fig, width="stretch")
+        st.caption(
+            "Using the absolute value here (rather than the signed % change) so that a big "
+            "up-day and a big down-day both count as 'high volatility' instead of cancelling "
+            "each other out around zero."
+        )
+
+        st.subheader("Correlation: |Change %| vs High-Low Difference")
+        abs_chg = eda["Chg%"].abs()
+        valid = eda["dif"].notna() & abs_chg.notna()
+        corr_dif = np.corrcoef(eda.loc[valid, "dif"], abs_chg[valid])[0, 1]
+        m, b = np.polyfit(eda.loc[valid, "dif"], abs_chg[valid], 1)
+        x_line = np.linspace(eda["dif"].min(), eda["dif"].max(), 100)
+        fig = go.Figure()
+        fig.add_trace(go.Scattergl(x=eda["dif"], y=abs_chg, mode="markers",
+                                    marker=dict(color="#2ca02c", size=4, opacity=0.5), name="Days"))
+        fig.add_trace(go.Scatter(x=x_line, y=m * x_line + b, mode="lines",
+                                  line=dict(color="black", width=2), name="Regression line"))
+        base_layout(fig, f"Correlation Between |Chg%| and High-Low Difference (r = {corr_dif:.3f})",
+                    "High-Low Difference", "Absolute Change (%)", height=440)
+        st.plotly_chart(fig, width="stretch")
+
+        st.subheader("Correlation: |Change %| vs Trading Volume")
+        corr_vol = np.corrcoef(eda["Volume"], abs_chg)[0, 1]
+        m2, b2 = np.polyfit(eda["Volume"], abs_chg, 1)
+        x_line2 = np.linspace(eda["Volume"].min(), eda["Volume"].max(), 100)
+        fig = go.Figure()
+        fig.add_trace(go.Scattergl(x=eda["Volume"], y=abs_chg, mode="markers",
+                                    marker=dict(color="#ff7f0e", size=4, opacity=0.5), name="Days"))
+        fig.add_trace(go.Scatter(x=x_line2, y=m2 * x_line2 + b2, mode="lines",
+                                  line=dict(color="black", width=2), name="Regression line"))
+        base_layout(fig, f"Correlation Between |Chg%| and Trade Volume (r = {corr_vol:.3f})",
+                    "Trade Volume", "Absolute Change (%)", height=440)
+        st.plotly_chart(fig, width="stretch")
+

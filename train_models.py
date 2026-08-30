@@ -38,7 +38,7 @@ MODELS_DIR = "models"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-HORIZON_DAYS = 60      # trading days to forecast into the future
+HORIZON_DAYS = 126     # trading days to forecast into the future (~6 months)
 N_SIMULATIONS = 150    # Monte Carlo paths for the recursive forecast
 DAMPEN_HALF_LIFE = 250
 MAXLAG = 10
