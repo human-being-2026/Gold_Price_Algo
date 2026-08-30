@@ -133,10 +133,14 @@ def recursive_forecast(model, df_clean, predict_fn, horizon_days=HORIZON_DAYS,
     p05 = np.percentile(all_paths, 5, axis=0)
     p50 = np.percentile(all_paths, 50, axis=0)
     p95 = np.percentile(all_paths, 95, axis=0)
+    sample_path = all_paths[0, :]   # ONE realised Monte Carlo path (keeps day-to-day noise,
+                                     # unlike the cross-sectional median which smooths it out)
 
-    forecast_df = pd.DataFrame({"Date": future_dates, "Median": p50, "Lower_5": p05, "Upper_95": p95})
+    forecast_df = pd.DataFrame({"Date": future_dates, "Median": p50, "Lower_5": p05,
+                                 "Upper_95": p95, "Path": sample_path})
     anchor = pd.DataFrame({"Date": [last_actual_date], "Median": [last_actual_price],
-                           "Lower_5": [last_actual_price], "Upper_95": [last_actual_price]})
+                           "Lower_5": [last_actual_price], "Upper_95": [last_actual_price],
+                           "Path": [last_actual_price]})
     return pd.concat([anchor, forecast_df], ignore_index=True)
 
 
@@ -345,27 +349,25 @@ def train_mlp(df_raw_path="Gold Price.csv"):
     trending_full = trend_model.predict(future_x_poly)
     future_trend = trending_full[len(df_clean):]
 
-    sims = np.zeros((150, HORIZON_DAYS))
-    for s in range(150):
-        p, dp, r = list(price), list(dprice), list(retrn)
-        for i in range(HORIZON_DAYS):
-            row = pd.DataFrame([{
-                'Price_Lag_1': dp[-1], 'Price_Lag_2': dp[-2], 'Price_Lag_3': dp[-3],
-                'MA_3': np.mean(dp[-3:]), 'MA_5': np.mean(dp[-5:]), 'MA_10': np.mean(dp[-10:]),
-                'Return_Lag_1': r[-1], 'Return_Lag_2': r[-2], 'Return_Lag_3': r[-3], 'Return_Lag_5': r[-5],
-            }])[feature_cols]
-            d = model.predict(row)[0] + rng.choice(residuals)
-            n = d + future_trend[i]
-            r_new = (n - p[-1]) / p[-1]
-            dp.append(d); p.append(n); r.append(r_new)
-            sims[s, i] = n
+    # ---- MLP's OWN forecast method: a single deterministic recursive path with
+    # one noise draw per step (matches MLP.ipynb exactly). No Monte Carlo, no
+    # percentile band -- that framework was only ever used in GBR/RFR/SVR. ----
+    p, dp, r = list(price), list(dprice), list(retrn)
+    single_path = np.zeros(HORIZON_DAYS)
+    for i in range(HORIZON_DAYS):
+        row = pd.DataFrame([{
+            'Price_Lag_1': dp[-1], 'Price_Lag_2': dp[-2], 'Price_Lag_3': dp[-3],
+            'MA_3': np.mean(dp[-3:]), 'MA_5': np.mean(dp[-5:]), 'MA_10': np.mean(dp[-10:]),
+            'Return_Lag_1': r[-1], 'Return_Lag_2': r[-2], 'Return_Lag_3': r[-3], 'Return_Lag_5': r[-5],
+        }])[feature_cols]
+        d = model.predict(row)[0] + rng.choice(residuals)
+        n = d + future_trend[i]
+        r_new = (n - p[-1]) / p[-1]
+        dp.append(d); p.append(n); r.append(r_new)
+        single_path[i] = n
 
-    p05 = np.percentile(sims, 5, axis=0)
-    p50 = np.percentile(sims, 50, axis=0)
-    p95 = np.percentile(sims, 95, axis=0)
-    forecast_df = pd.DataFrame({"Date": future_dates, "Median": p50, "Lower_5": p05, "Upper_95": p95})
-    anchor = pd.DataFrame({"Date": [last_date], "Median": [last_price],
-                           "Lower_5": [last_price], "Upper_95": [last_price]})
+    forecast_df = pd.DataFrame({"Date": future_dates, "Path": single_path})
+    anchor = pd.DataFrame({"Date": [last_date], "Path": [last_price]})
     forecast_df = pd.concat([anchor, forecast_df], ignore_index=True)
     forecast_df.to_csv(f"{RESULTS_DIR}/forecast_mlp.csv", index=False)
 
@@ -391,9 +393,13 @@ def build_eda_data(raw_csv_path="Gold Price.csv"):
     df['RunningMax'] = df['Price'].cummax()
     df['Drawdown_pct'] = (df['Price'] - df['RunningMax']) / df['RunningMax'] * 100
     df['Indexed_Price'] = df['Price'] / df['Price'].iloc[0] * 100
+    df['Return'] = df['Price'].pct_change()
+    df['Overnight_Pct'] = (df['Open'] - df['Price'].shift(1)) / df['Price'].shift(1) * 100
+    df['Intraday_Pct'] = (df['Price'] - df['Open']) / df['Open'] * 100
 
     keep_cols = ['Date', 'Year', 'Month', 'MonthName', 'Price', 'Open', 'High', 'Low',
-                 'Volume', 'Chg%', 'dif', 'Daily_Range_Pct', 'Drawdown_pct', 'Indexed_Price']
+                 'Volume', 'Chg%', 'dif', 'Daily_Range_Pct', 'Drawdown_pct', 'Indexed_Price',
+                 'Return', 'Overnight_Pct', 'Intraday_Pct']
     df[keep_cols].to_csv(f"{RESULTS_DIR}/eda_data.csv", index=False)
 
 
@@ -459,6 +465,12 @@ def main():
             "latest_price": latest_price, "latest_date": latest_date,
             "n_rows": int(len(df_clean)), "horizon_days": HORIZON_DAYS,
             "baseline_model": BASELINE_MODEL, "best_model": best,
+            # GBR/RFR/SVR run a genuine Monte Carlo (300-path) recursive forecast
+            # with a 5th-95th percentile band, exactly as in their own notebooks.
+            # MLP.ipynb never did this -- it only produced ONE deterministic
+            # recursive path with a single noise draw per step -- so MLP has no
+            # confidence band and app.py must not fabricate one for it.
+            "monte_carlo_models": ["gbr", "rfr", "svr"],
         }, f)
 
     print("\n=== Model comparison (test set) ===")
